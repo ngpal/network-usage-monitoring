@@ -1,0 +1,18 @@
+[package]
+name = "network-usage-monitoring-ebpf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+network-usage-monitoring-common = { path = "../network-usage-monitoring-common" }
+
+aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
+network-types = "0.0.8"
+
+[build-dependencies]
+which = { workspace = true }
+
+[[bin]]
+name = "network-usage-monitoring"
+path = "src/main.rs"
