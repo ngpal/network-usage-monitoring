@@ -3,7 +3,12 @@
 
 use core::mem;
 
-use aya_ebpf::{bindings::xdp_action, macros::xdp, programs::XdpContext};
+use aya_ebpf::{
+    bindings::xdp_action,
+    macros::{map, xdp},
+    maps::HashMap,
+    programs::XdpContext,
+};
 use aya_log_ebpf::info;
 use network_types::{
     eth::{EthHdr, EtherType},
@@ -17,6 +22,9 @@ use network_types::{
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
+
+#[map]
+static mut IP_COUNTERS: HashMap<u32, u64> = HashMap::with_max_entries(1024, 0);
 
 #[xdp]
 pub fn xdp_firewall(ctx: XdpContext) -> u32 {
@@ -61,8 +69,12 @@ fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
         _ => return Err(()),
     };
 
-    //
-    info!(&ctx, "SRC IP: {:i}, SRC PORT: {}", source_addr, source_port);
+    let mut count = unsafe { IP_COUNTERS.get(&source_addr).copied().unwrap_or(0) };
+    count += 1;
+
+    unsafe {
+        IP_COUNTERS.insert(&source_addr, &count, 0).unwrap_or(());
+    }
 
     Ok(xdp_action::XDP_PASS)
 }
