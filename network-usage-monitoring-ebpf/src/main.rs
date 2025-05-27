@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![allow(static_mut_refs)]
 
 use core::mem;
 
@@ -9,12 +10,9 @@ use aya_ebpf::{
     maps::HashMap,
     programs::XdpContext,
 };
-use aya_log_ebpf::info;
 use network_types::{
     eth::{EthHdr, EtherType},
-    ip::{IpProto, Ipv4Hdr},
-    tcp::TcpHdr,
-    udp::UdpHdr,
+    ip::Ipv4Hdr,
 };
 
 #[cfg(not(test))]
@@ -23,8 +21,15 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+struct IpStats {
+    packets: u64,
+    bytes: u64,
+}
+
 #[map]
-static mut IP_COUNTERS: HashMap<u32, u64> = HashMap::with_max_entries(1024, 0);
+static mut IP_COUNTERS: HashMap<u32, IpStats> = HashMap::with_max_entries(1024, 0);
 
 #[xdp]
 pub fn xdp_firewall(ctx: XdpContext) -> u32 {
@@ -34,17 +39,21 @@ pub fn xdp_firewall(ctx: XdpContext) -> u32 {
     }
 }
 
-#[inline(always)] //
 fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
     let start = ctx.data();
     let end = ctx.data_end();
     let len = mem::size_of::<T>();
 
-    if start + offset + len > end {
+    // cast pointers to usize for arithmetic and comparison
+    let start_addr = start as usize;
+    let end_addr = end as usize;
+
+    if start_addr + offset + len > end_addr {
         return Err(());
     }
 
-    Ok((start + offset) as *const T)
+    // Use pointer arithmetic with add(), safer and verifier friendly
+    Ok(unsafe { start.wrapping_add(offset) as *const T })
 }
 
 fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
@@ -57,23 +66,24 @@ fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
     let ipv4hdr: *const Ipv4Hdr = ptr_at(&ctx, EthHdr::LEN)?;
     let source_addr = u32::from_be_bytes(unsafe { (*ipv4hdr).src_addr });
 
-    let source_port = match unsafe { (*ipv4hdr).proto } {
-        IpProto::Tcp => {
-            let tcphdr: *const TcpHdr = ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-            u16::from_be(unsafe { (*tcphdr).source })
-        }
-        IpProto::Udp => {
-            let udphdr: *const UdpHdr = ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-            u16::from_be_bytes(unsafe { (*udphdr).source })
-        }
-        _ => return Err(()),
+    let mut stats = unsafe {
+        IP_COUNTERS
+            .get(&source_addr)
+            .copied()
+            .unwrap_or(IpStats::default())
     };
+    stats.packets += 1;
+    let data_start = ctx.data() as usize;
+    let data_end = ctx.data_end() as usize;
 
-    let mut count = unsafe { IP_COUNTERS.get(&source_addr).copied().unwrap_or(0) };
-    count += 1;
+    if data_end >= data_start {
+        stats.bytes += (data_end - data_start) as u64;
+    } else {
+        return Err(()); // invalid packet
+    }
 
     unsafe {
-        IP_COUNTERS.insert(&source_addr, &count, 0).unwrap_or(());
+        IP_COUNTERS.insert(&source_addr, &stats, 0).unwrap_or(());
     }
 
     Ok(xdp_action::XDP_PASS)

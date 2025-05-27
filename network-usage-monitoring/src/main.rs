@@ -1,18 +1,34 @@
-
-use std::{net::Ipv4Addr, sync::Arc,};
+use std::{net::Ipv4Addr, sync::Arc};
 
 use anyhow::Context;
-use aya::{maps::HashMap, programs::{Xdp, XdpFlags}};
+use aya::{
+    maps::HashMap,
+    programs::{Xdp, XdpFlags},
+    Pod,
+};
 use aya_log::EbpfLogger;
 use clap::Parser;
 use log::{info, warn};
-use tokio::{signal, sync::Notify, time::{sleep, Duration}};
+use tokio::{
+    signal,
+    sync::Notify,
+    time::{sleep, Duration},
+};
 
 #[derive(Debug, Parser)]
 struct Opt {
     #[clap(short, long, default_value = "eth0")]
     iface: String,
 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+struct IpStats {
+    packets: u64,
+    bytes: u64,
+}
+
+unsafe impl Pod for IpStats {}
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
@@ -31,8 +47,7 @@ async fn main() -> Result<(), anyhow::Error> {
         "/network-usage-monitoring"
     )))?;
 
-    let program: &mut Xdp =
-        bpf.program_mut("xdp_firewall").unwrap().try_into()?;
+    let program: &mut Xdp = bpf.program_mut("xdp_firewall").unwrap().try_into()?;
     program.load()?;
     program.attach(&opt.iface, XdpFlags::default())
         .context("failed to attach the XDP program with default flags - try changing XdpFlags::default() to XdpFlags::SKB_MODE")?;
@@ -43,15 +58,22 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     tokio::spawn(async move {
-        let ip_counters: HashMap<_, u32, u64> = HashMap::try_from(bpf.map("IP_COUNTERS").unwrap()).unwrap();
+        let ip_counters: HashMap<_, u32, IpStats> =
+            HashMap::try_from(bpf.map("IP_COUNTERS").unwrap()).unwrap();
         loop {
             println!("--- IP packet counts ---");
+            let mut total = 0;
             let mut entries = ip_counters.iter();
-            while let Some(Ok((ip, count))) = entries.next() {
+            while let Some(Ok((ip, stat))) = entries.next() {
                 let ip = Ipv4Addr::from(ip.to_be()); // IP is in big endian
-                println!("{:<15} => {}", ip, count);
+                println!(
+                    "{:<15} => {:>9} packets {:>9} bytes",
+                    ip, stat.packets, stat.bytes
+                );
+                total += stat.bytes;
             }
             println!("-------------------------\n");
+            println!("Total bytes recieved: {}\n", total);
 
             tokio::select! {
                 _ = sleep(Duration::from_secs(5)) => {},
