@@ -4,11 +4,11 @@ use anyhow::Context;
 use aya::{
     maps::HashMap,
     programs::{Xdp, XdpFlags},
-    Pod,
 };
 use aya_log::EbpfLogger;
 use clap::Parser;
 use log::{info, warn};
+use network_usage_monitoring_common::IpStats;
 use tokio::{
     signal,
     sync::Notify,
@@ -20,15 +20,6 @@ struct Opt {
     #[clap(short, long, default_value = "eth0")]
     iface: String,
 }
-
-#[repr(C)]
-#[derive(Copy, Clone, Default)]
-struct IpStats {
-    packets: u64,
-    bytes: u64,
-}
-
-unsafe impl Pod for IpStats {}
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {

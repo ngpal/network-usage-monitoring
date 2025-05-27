@@ -14,18 +14,12 @@ use network_types::{
     eth::{EthHdr, EtherType},
     ip::Ipv4Hdr,
 };
+use network_usage_monitoring_common::IpStats;
 
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Default)]
-struct IpStats {
-    packets: u64,
-    bytes: u64,
 }
 
 #[map]
@@ -53,7 +47,7 @@ fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
     }
 
     // Use pointer arithmetic with add(), safer and verifier friendly
-    Ok(unsafe { start.wrapping_add(offset) as *const T })
+    Ok(start.wrapping_add(offset) as *const T)
 }
 
 fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
