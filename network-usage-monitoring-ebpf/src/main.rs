@@ -26,8 +26,8 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 static mut IP_COUNTERS: HashMap<u32, IpStats> = HashMap::with_max_entries(1024, 0);
 
 #[xdp]
-pub fn xdp_firewall(ctx: XdpContext) -> u32 {
-    match try_xdp_firewall(ctx) {
+pub fn egress_counter(ctx: XdpContext) -> u32 {
+    match try_egress_counter(ctx) {
         Ok(ret) => ret,
         Err(_) => xdp_action::XDP_ABORTED,
     }
@@ -50,7 +50,7 @@ fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
     Ok(start.wrapping_add(offset) as *const T)
 }
 
-fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
+fn try_egress_counter(ctx: XdpContext) -> Result<u32, ()> {
     let ethhdr: *const EthHdr = ptr_at(&ctx, 0)?; //
     match unsafe { (*ethhdr).ether_type } {
         EtherType::Ipv4 => {}
