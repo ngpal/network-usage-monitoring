@@ -19,7 +19,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
     style::{Color, Style},
-    widgets::{Block, Borders, Row, Table},
+    widgets::{Block, Borders, Paragraph, Row, Table},
     Terminal,
 };
 use std::io;
@@ -27,7 +27,7 @@ use tokio::time::Duration;
 
 #[derive(Debug, Parser)]
 struct Opt {
-    #[clap(short, long, default_value = "eth0")]
+    #[clap(short, long, default_value = "enp0s1")]
     iface: String,
 }
 
@@ -66,7 +66,7 @@ impl<'a> App<'a> {
 
 fn draw_ui(f: &mut ratatui::Frame<'_>, app: &App) {
     let chunks = Layout::default()
-        .constraints([Constraint::Percentage(99), Constraint::Max(1)].as_ref())
+        .constraints([Constraint::Percentage(98), Constraint::Max(1)].as_ref())
         .split(f.area());
 
     let mut total_in = 0;
@@ -83,45 +83,30 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &App) {
         ])
     });
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-        ],
-    )
-    .header(
-        Row::new(vec![
-            "IP",
-            "Packets (in)",
-            "Bytes (in)",
-            "Packets (out)",
-            "Bytes (out)",
-        ])
-        .style(Style::default().fg(Color::Yellow)),
-    )
-    .block(
-        Block::default()
-            .title("Network Usage")
-            .borders(Borders::ALL),
-    )
-    .widths(&[
-        Constraint::Percentage(20),
-        Constraint::Percentage(20),
-        Constraint::Percentage(20),
-        Constraint::Percentage(20),
-        Constraint::Percentage(20),
-    ]);
+    let table = Table::new(rows, [Constraint::Ratio(1, 5); 5])
+        .header(
+            Row::new(vec![
+                "IP",
+                "Packets (in)",
+                "Bytes (in)",
+                "Packets (out)",
+                "Bytes (out)",
+            ])
+            .style(Style::default().fg(Color::Yellow)),
+        )
+        .block(
+            Block::default()
+                .title("Network Usage")
+                .borders(Borders::ALL),
+        )
+        .widths(&[Constraint::Ratio(1, 5); 5]);
 
     f.render_widget(table, chunks[0]);
     f.render_widget(
-        format!(
+        Paragraph::new(format!(
             "Total bytes in: {} Total bytes out: {}",
             total_in, total_out
-        ),
+        )),
         chunks[1],
     );
 }
