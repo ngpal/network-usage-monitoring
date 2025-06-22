@@ -54,7 +54,7 @@ impl<'a> App<'a> {
 
         let mut entries = self.ip_counters.iter();
         while let Some(Ok((ip, stat))) = entries.next() {
-            let ip = Ipv4Addr::from(ip.to_be());
+            let ip = Ipv4Addr::from(ip.to_le());
             self.total_bytes += stat.ingress.bytes;
             self.data.push((ip, stat));
         }
