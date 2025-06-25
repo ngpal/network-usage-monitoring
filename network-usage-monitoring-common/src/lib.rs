@@ -5,7 +5,7 @@ use aya::Pod;
 
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
-pub struct IpStats {
+pub struct NetStats {
     pub ingress: Traffic,
     pub egress: Traffic,
 }
@@ -18,4 +18,4 @@ pub struct Traffic {
 }
 
 #[cfg(feature = "user")]
-unsafe impl Pod for IpStats {}
+unsafe impl Pod for NetStats {}

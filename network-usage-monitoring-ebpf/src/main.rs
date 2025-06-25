@@ -12,9 +12,11 @@ use aya_ebpf::{
 };
 use network_types::{
     eth::{EthHdr, EtherType},
-    ip::Ipv4Hdr,
+    ip::{IpProto, Ipv4Hdr},
+    tcp::TcpHdr,
+    udp::UdpHdr,
 };
-use network_usage_monitoring_common::IpStats;
+use network_usage_monitoring_common::NetStats;
 
 #[cfg(not(test))]
 #[panic_handler]
@@ -23,7 +25,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 }
 
 #[map]
-static mut IP_COUNTERS: HashMap<u32, IpStats> = HashMap::with_max_entries(1024, 0);
+static mut NET_COUNTERS: HashMap<u16, NetStats> = HashMap::with_max_entries(1024, 0);
 
 #[xdp]
 pub fn ingress_counter(ctx: XdpContext) -> u32 {
@@ -51,25 +53,45 @@ fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
 }
 
 fn try_ingress_counter(ctx: XdpContext) -> Result<u32, ()> {
-    let ethhdr: *const EthHdr = ptr_at(&ctx, 0)?; //
+    let ethhdr: *const EthHdr = ptr_at(&ctx, 0)?;
     match unsafe { (*ethhdr).ether_type } {
         EtherType::Ipv4 => {}
         _ => return Ok(xdp_action::XDP_PASS),
     }
 
     let ipv4hdr: *const Ipv4Hdr = ptr_at(&ctx, EthHdr::LEN)?;
-    let source_addr = u32::from_be_bytes(unsafe { (*ipv4hdr).src_addr });
+    // let source_addr = u32::from_be_bytes(unsafe { (*ipv4hdr).src_addr });
 
+    // Get IP protocol and header length
+    let proto = unsafe { (*ipv4hdr).proto };
+    let ihl = (unsafe { (*ipv4hdr).ihl() } & 0x0F) * 4; // in bytes
+
+    // Only handle TCP and UDP
+    if proto != IpProto::Udp && proto != IpProto::Tcp {
+        return Ok(xdp_action::XDP_PASS);
+    }
+
+    // Calculate transport header offset
+    let transport_offset = EthHdr::LEN + ihl as usize;
+
+    // Read ports (first 4 bytes of TCP/UDP header)
+    let ports: *const u8 = ptr_at::<[u8; 4]>(&ctx, transport_offset)? as *const u8;
+    // let src_port = u16::from_be(unsafe { *(ports as *const u16) });
+    let dst_port = u16::from_be(unsafe { *(ports.add(2) as *const u16) });
+
+    // --- you can use src_port or dst_port as keys now ---
+    // for example, count per-port traffic:
     let mut stats = unsafe {
-        IP_COUNTERS
-            .get(&source_addr)
+        NET_COUNTERS
+            .get(&dst_port)
             .copied()
-            .unwrap_or(IpStats::default())
+            .unwrap_or(NetStats::default())
     };
+
     stats.ingress.packets += 1;
+
     let data_start = ctx.data() as usize;
     let data_end = ctx.data_end() as usize;
-
     if data_end >= data_start {
         stats.ingress.bytes += (data_end - data_start) as u64;
     } else {
@@ -77,7 +99,7 @@ fn try_ingress_counter(ctx: XdpContext) -> Result<u32, ()> {
     }
 
     unsafe {
-        IP_COUNTERS.insert(&source_addr, &stats, 0).unwrap_or(());
+        NET_COUNTERS.insert(&dst_port, &stats, 0).unwrap_or(());
     }
 
     Ok(xdp_action::XDP_PASS)
@@ -93,19 +115,34 @@ pub fn egress_counter(ctx: TcContext) -> i32 {
 
 pub fn try_egress_counter(ctx: TcContext) -> Result<i32, ()> {
     let ethhdr: EthHdr = ctx.load(0).map_err(|_| ())?;
-    match ethhdr.ether_type {
-        EtherType::Ipv4 => {}
-        _ => return Ok(TC_ACT_PIPE),
+
+    // only handle IPv4
+    if !matches!(ethhdr.ether_type, EtherType::Ipv4) {
+        return Ok(TC_ACT_PIPE);
     }
 
     let ipv4hdr: Ipv4Hdr = ctx.load(EthHdr::LEN).map_err(|_| ())?;
-    let destination = u32::from_be_bytes(ipv4hdr.dst_addr);
+    let transport_offset = EthHdr::LEN + Ipv4Hdr::LEN;
+
+    let src_port = match ipv4hdr.proto {
+        IpProto::Tcp => {
+            // TCP
+            let tcphdr: TcpHdr = ctx.load(transport_offset).map_err(|_| ())?;
+            u16::from_be(tcphdr.source)
+        }
+        IpProto::Udp => {
+            // UDP
+            let udphdr: UdpHdr = ctx.load(transport_offset).map_err(|_| ())?;
+            u16::from_be_bytes(udphdr.source)
+        }
+        _ => return Ok(TC_ACT_PIPE), // skip non-TCP/UDP
+    };
 
     let mut stats = unsafe {
-        IP_COUNTERS
-            .get(&destination)
+        NET_COUNTERS
+            .get(&src_port)
             .copied()
-            .unwrap_or(IpStats::default())
+            .unwrap_or(NetStats::default())
     };
 
     stats.egress.packets += 1;
@@ -118,7 +155,7 @@ pub fn try_egress_counter(ctx: TcContext) -> Result<i32, ()> {
         return Err(());
     }
 
-    unsafe { IP_COUNTERS.insert(&destination, &stats, 0).unwrap_or(()) }
+    unsafe { NET_COUNTERS.insert(&src_port, &stats, 0).unwrap_or(()) }
 
     Ok(TC_ACT_PIPE)
 }

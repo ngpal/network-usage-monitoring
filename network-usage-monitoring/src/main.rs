@@ -1,4 +1,4 @@
-use std::net::Ipv4Addr;
+use std::{fs, process::Command};
 
 use anyhow::Context;
 use aya::{
@@ -14,7 +14,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use log::{info, warn};
-use network_usage_monitoring_common::IpStats;
+use network_usage_monitoring_common::NetStats;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
@@ -25,24 +25,50 @@ use ratatui::{
 use std::io;
 use tokio::time::Duration;
 
+const COLS: usize = 7;
+
 #[derive(Debug, Parser)]
 struct Opt {
     #[clap(short, long, default_value = "enp0s1")]
     iface: String,
 }
 
+fn get_pid_from_port(port: u16) -> Option<u32> {
+    let output = Command::new("ss").args(["-tulpn"]).output().ok()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if line.contains(&format!(":{}", port)) {
+            if let Some(pid_part) = line.split("pid=").nth(1) {
+                let pid_str = pid_part.split(',').next()?;
+                return pid_str.parse().ok();
+            }
+        }
+    }
+
+    None
+}
+
+fn get_process_name(pid: &u32) -> String {
+    let path = format!("/proc/{}/comm", pid);
+    fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .unwrap_or("<unnamed>".to_string())
+}
+
 struct App<'a> {
-    ip_counters: HashMap<&'a mut MapData, u32, IpStats>,
-    data: Vec<(Ipv4Addr, IpStats)>,
+    net_counters: HashMap<&'a mut MapData, u16, NetStats>,
+    data: Vec<(u16, NetStats)>,
     total_bytes: u64,
 }
 
 impl<'a> App<'a> {
     fn new(bpf: &'a mut Ebpf) -> Result<Self, anyhow::Error> {
-        let map = bpf.map_mut("IP_COUNTERS").context("Map not found")?;
-        let ip_counters: HashMap<&mut MapData, u32, IpStats> = HashMap::try_from(map)?;
+        let map = bpf.map_mut("NET_COUNTERS").context("Map not found")?;
+        let net_counters: HashMap<&mut MapData, u16, NetStats> = HashMap::try_from(map)?;
         Ok(Self {
-            ip_counters,
+            net_counters,
             data: Vec::new(),
             total_bytes: 0,
         })
@@ -52,11 +78,10 @@ impl<'a> App<'a> {
         self.data.clear();
         self.total_bytes = 0;
 
-        let mut entries = self.ip_counters.iter();
-        while let Some(Ok((ip, stat))) = entries.next() {
-            let ip = Ipv4Addr::from(ip.to_le());
+        let mut entries = self.net_counters.iter();
+        while let Some(Ok((port, stat))) = entries.next() {
             self.total_bytes += stat.ingress.bytes;
-            self.data.push((ip, stat));
+            self.data.push((port, stat));
         }
 
         self.data
@@ -71,11 +96,20 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &App) {
 
     let mut total_in = 0;
     let mut total_out = 0;
-    let rows = app.data.iter().map(|(ip, stat)| {
+    let rows = app.data.iter().map(|(port, stat)| {
         total_in += stat.ingress.bytes;
         total_out += stat.egress.bytes;
+        let pid = get_pid_from_port(*port);
+
+        let pname = match pid {
+            Some(id) => get_process_name(&id),
+            None => "<unnamed>".to_string(),
+        };
+
         Row::new(vec![
-            ip.to_string(),
+            pid.unwrap_or(0).to_string(),
+            pname,
+            port.to_string(),
             stat.ingress.packets.to_string(),
             stat.ingress.bytes.to_string(),
             stat.egress.packets.to_string(),
@@ -83,10 +117,12 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &App) {
         ])
     });
 
-    let table = Table::new(rows, [Constraint::Ratio(1, 5); 5])
+    let table = Table::new(rows, [Constraint::Ratio(1, COLS as u32); COLS])
         .header(
             Row::new(vec![
-                "IP",
+                "PID",
+                "Process",
+                "Port",
                 "Packets (in)",
                 "Bytes (in)",
                 "Packets (out)",
@@ -99,7 +135,7 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &App) {
                 .title("Network Usage")
                 .borders(Borders::ALL),
         )
-        .widths(&[Constraint::Ratio(1, 5); 5]);
+        .widths(&[Constraint::Ratio(1, COLS as u32); COLS]);
 
     f.render_widget(table, chunks[0]);
     f.render_widget(
